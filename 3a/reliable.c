@@ -49,14 +49,14 @@ struct reliable_state {
 	conn_t *c;			/* This is the connection object */
 
 	/* Add your own data fields below this */
+	struct config_common *cc;
 	send_buffer *sbuf;
 	recv_buffer *rbuf;
 };
 
 rel_t *rel_list;
 
-void
-addend_send(rel_t *r, packet_t *p)
+void addend_send(rel_t *r, packet_t *p)
 {
 	node *n = xmalloc(sizeof(*n));
 	n->packet = p;
@@ -71,9 +71,7 @@ addend_send(rel_t *r, packet_t *p)
 		r->sbuf->tail = n;
 	}
 }
-
-void
-addend_recv(rel_t *r, packet_t *p)
+void addend_recv(rel_t *r, packet_t *p)
 {
 	node *n = xmalloc(sizeof(*n));
 	n->packet = p;
@@ -88,9 +86,7 @@ addend_recv(rel_t *r, packet_t *p)
 		r->rbuf->tail = n;
 	}
 }
-
-node *
-remove_send(rel_t *r)
+node *remove_send(rel_t *r)
 {
 	if (r->sbuf->head == NULL) {
 		return NULL;
@@ -108,9 +104,7 @@ remove_send(rel_t *r)
 	n->next = NULL;
 	return n;
 }
-
-node *
-remove_recv(rel_t *r)
+node *remove_recv(rel_t *r)
 {
 	if (r->rbuf->head == NULL) {
 		return NULL;
