@@ -121,7 +121,6 @@ clock_gettime (int id, struct timespec *tp)
 }
 #endif /* NEED_CLOCK_GETTIME */
 
-/* Useful for debugging */
 void
 print_pkt (const packet_t *buf, const char *op, int n)
 {
@@ -174,9 +173,6 @@ conn_bufspace (conn_t *c)
   return used > bufsize ? 0 : bufsize - used;
 }
 
-/* Outputs data to STDOUT
- * conn_bufspace is useful --> tells how much space is availale for use by conn_output
-*/
 int
 conn_output (conn_t *c, const void *_buf, size_t _n)
 {
@@ -234,13 +230,6 @@ conn_output (conn_t *c, const void *_buf, size_t _n)
     cevents[c->wpoll].events |= POLLOUT;
   return _n;
 }
-
-/* Reads data from standard input 
- * If no data is available at the moment, conn_input returns 0
- *
- * If EOF is received, conn_input will return -1
-
-*/
 
 int
 conn_input (conn_t *c, void *buf, size_t n)
