@@ -49,7 +49,7 @@ struct reliable_state {
 	conn_t *c;			/* This is the connection object */
 
 	/* Add your own data fields below this */
-	struct config_common *cc;
+	const struct config_common *config;
 	send_buffer *sbuf;
 	recv_buffer *rbuf;
 };
@@ -152,6 +152,7 @@ rel_create (conn_t *c, const struct sockaddr_storage *ss,
 	rel_list = r;
 
 	/* Do any other initialization you need here */
+	r->config = cc;
 	r->sbuf = xmalloc(sizeof(send_buffer));
 	r->rbuf = xmalloc(sizeof(recv_buffer));
 
@@ -161,6 +162,9 @@ rel_create (conn_t *c, const struct sockaddr_storage *ss,
 void
 rel_destroy (rel_t *r)
 {
+	free(r->sbuf);
+	free(r->rbuf);
+
 	if (r->next)
 		r->next->prev = r->prev;
 	*r->prev = r->next;
