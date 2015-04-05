@@ -28,15 +28,16 @@ struct node {
 
 struct send_buffer {
 	uint32_t max_size;
-	uint32_t last_acked;
-	node *last_sent;
+	uint32_t next_seqno;
+	uint32_t next_acked;
+	// node *last_sent;
 	node *head;
 	node *tail;
 };
 
 struct recv_buffer {
 	uint32_t max_size;
-	uint32_t last_read;
+	// uint32_t last_read;
 	uint32_t next_expected;
 	node *head;
 	node *tail;
@@ -59,6 +60,7 @@ rel_t *rel_list;
 void addend_send(rel_t *r, packet_t *p)
 {
 	node *n = xmalloc(sizeof(*n));
+	memset(n, 0, sizeof(*n));
 	n->packet = p;
 
 	if (r->sbuf->head == NULL) {
@@ -74,6 +76,7 @@ void addend_send(rel_t *r, packet_t *p)
 void addend_recv(rel_t *r, packet_t *p)
 {
 	node *n = xmalloc(sizeof(*n));
+	memset(n, 0, sizeof(*n));
 	n->packet = p;
 
 	if (r->rbuf->head == NULL) {
@@ -84,6 +87,27 @@ void addend_recv(rel_t *r, packet_t *p)
 		r->rbuf->tail->next = n;
 		n->prev = r->rbuf->tail;
 		r->rbuf->tail = n;
+	}
+}
+void addinorder_recv(rel_t *r, packet_t *p)
+{
+	node *n = xmalloc(sizeof(*n));
+	memset(n, 0, sizeof(*n));
+	n->packet = p;
+
+	if (r->rbuf->head == NULL ||
+			ntohl(r->rbuf->head->packet->seqno) > ntohl(n->packet->seqno)) {
+		r->rbuf->head = n;
+		r->rbuf->tail = n;
+	}
+	else {
+		node *cur = r->rbuf->head;
+		while (cur->next != NULL &&
+				ntohl(cur->next->packet->seqno) < ntohl(n->packet->seqno)) {
+			cur = cur->next;
+		}
+		n->next = cur->next;
+		cur->next = n;
 	}
 }
 node *remove_send(rel_t *r)
@@ -153,8 +177,13 @@ rel_create (conn_t *c, const struct sockaddr_storage *ss,
 
 	/* Do any other initialization you need here */
 	r->config = cc;
-	r->sbuf = xmalloc(sizeof(send_buffer));
-	r->rbuf = xmalloc(sizeof(recv_buffer));
+
+	r->sbuf = (send_buffer *) xmalloc(sizeof(send_buffer));
+	r->sbuf->next_acked = 1;
+	r->sbuf->next_seqno = 1;
+
+	r->rbuf = (recv_buffer *) xmalloc(sizeof(recv_buffer));
+	r->rbuf->next_expected = 1;
 
 	return r;
 }
@@ -192,12 +221,62 @@ rel_demux (const struct config_common *cc,
 void
 rel_recvpkt (rel_t *r, packet_t *pkt, size_t n)
 {
+	char *op = "recv";
+	uint16_t length = ntohs(pkt->len);
+	uint32_t seqno = ntohl(pkt->seqno);
+
+	if (length == 8) {
+
+	}
+	else if (length == 12) {
+
+	}
+	else {
+		if (seqno == r->rbuf->next_expected) {
+			r->rbuf->next_expected = r->rbuf->next_expected + 1;
+			addinorder_recv(r, pkt);
+			rel_output(r);
+		}
+		else if (seqno < r->rbuf->next_expected) {
+			return;
+		}
+		else {
+			addinorder_recv(r, pkt);
+		}
+	}
 }
 
 
 void
 rel_read (rel_t *s)
 {
+	char buf[500];
+	char *op = "send";
+
+	memset(buf, 0, 500);
+
+	int input;
+
+	while (1) {
+		input = conn_input(s->c, (void *) buf, 500);
+		if (input == 0)
+			return;
+
+		packet_t *pkt = (packet_t *) xmalloc(sizeof(*pkt));
+		memset(pkt, 0, sizeof(*pkt));
+
+		pkt->cksum = 0; //TODO: cksum
+		pkt->len = htons(input + 11);
+		pkt->seqno = htonl(s->sbuf->next_seqno);
+		memcpy((void *) pkt->data, buf, 500);
+		s->sbuf->next_seqno = s->sbuf->next_seqno + 1;
+
+		addend_send(s, pkt);
+		print_pkt(pkt, op, input + 11);
+
+		conn_sendpkt(s->c, pkt, input + 11);
+		// s->sbuf->last_sent = s->sbuf->tail;
+	}
 }
 
 void
@@ -209,5 +288,15 @@ void
 rel_timer ()
 {
 	/* Retransmit any packets that need to be retransmitted */
+	rel_t *rel = rel_list;
+	while (rel != NULL) {
+		node *n = rel->sbuf->head;
+		while (n != NULL) {
+			conn_sendpkt(rel->c, n->packet, ntohs(n->packet->len));
+			n = n->next;
+		}
+		rel = rel->next;
+	}
+
 
 }
