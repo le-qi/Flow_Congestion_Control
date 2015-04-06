@@ -55,6 +55,7 @@ struct reliable_state {
 
 	int input_val;
 	int eof_read;
+	int timeout;
 };
 
 rel_t *rel_list;
@@ -64,6 +65,7 @@ void addend_send(rel_t *r, packet_t *p)
 	node *n = (node *) xmalloc(sizeof(*n));
 	memset(n, 0, sizeof(*n));
 	n->packet = p;
+	time(&n->time_sent);
 
 	if (r->sbuf->head == NULL) {
 		r->sbuf->head = n;
@@ -242,7 +244,7 @@ void test_packets(rel_t *s)
 	pkt0->len = htons(13);
 	pkt0->ackno = htonl(s->sbuf->next_acked);
 	pkt0->seqno = htonl(3);
-	strncpy(pkt0->data, zero, 500);
+	strcpy(pkt0->data, zero);
 	addend_send(s, pkt0);
 	conn_sendpkt(s->c, pkt0, 13);
 
@@ -253,7 +255,7 @@ void test_packets(rel_t *s)
 	pkt1->len = htons(14);
 	pkt1->ackno = htonl(s->sbuf->next_acked);
 	pkt1->seqno = htonl(3);
-	strncpy((void *) pkt1->data, (void *) one, 500);
+	strcpy((void *) pkt1->data, (void *) one);
 	addend_send(s, pkt1);
 	conn_sendpkt(s->c, pkt1, 14);
 
@@ -264,7 +266,7 @@ void test_packets(rel_t *s)
 	pkt2->len = htons(15);
 	pkt2->ackno = htonl(s->sbuf->next_acked);
 	pkt2->seqno = htonl(4);
-	strncpy((void *) pkt2->data, (void *) two, 500);
+	strcpy((void *) pkt2->data, (void *) two);
 	addend_send(s, pkt2);
 	conn_sendpkt(s->c, pkt2, 15);
 
@@ -275,7 +277,7 @@ void test_packets(rel_t *s)
 	pkt3->len = htons(16);
 	pkt3->ackno = htonl(s->sbuf->next_acked);
 	pkt3->seqno = htonl(1);
-	strncpy((void *) pkt3->data, (void *) three, 500);
+	strcpy((void *) pkt3->data, (void *) three);
 	addend_send(s, pkt3);
 	conn_sendpkt(s->c, pkt3, 16);
 
@@ -286,13 +288,22 @@ void test_packets(rel_t *s)
 	pkt4->len = htons(17);
 	pkt4->ackno = htonl(s->sbuf->next_acked);
 	pkt4->seqno = htonl(2);
-	strncpy((void *) pkt4->data, (void *) four, 500);
+	strcpy((void *) pkt4->data, (void *) four);
 	addend_send(s, pkt4);
 	conn_sendpkt(s->c, pkt4, 17);
 
 	// print_send(s);
 }
-
+uint32_t size_recv(rel_t *r)
+{
+	uint32_t size = 0;
+	node *cur = r->rbuf->head;
+	while (cur != NULL) {
+		size = size + 1;
+		cur = cur->next;
+	}
+	return size;
+}
 /* Creates a new reliable protocol session, returns NULL on failure.
  * Exactly one of c and ss should be NULL.  (ss is NULL when called
  * from rlib.c, while c is NULL when this function is called from
@@ -322,18 +333,21 @@ rel_create (conn_t *c, const struct sockaddr_storage *ss,
 	rel_list = r;
 
 	/* Do any other initialization you need here */
-	r->config = cc;
 
 	r->sbuf = (send_buffer *) xmalloc(sizeof(send_buffer));
 	r->sbuf->next_acked = 1;
 	r->sbuf->next_seqno = 1;
+	r->sbuf->max_size = cc->window;
+	cc->timeout;
 
 	r->rbuf = (recv_buffer *) xmalloc(sizeof(recv_buffer));
 	r->rbuf->next_read = 1;
 	r->rbuf->next_expected = 1;
+	r->rbuf->max_size = cc->window;
 
 	r->input_val = 0;
 	r->eof_read = 0;
+	r->timeout = cc->timeout;
 
 	return r;
 }
@@ -376,7 +390,11 @@ rel_recvpkt (rel_t *r, packet_t *pkt, size_t n)
 	uint32_t ackno = ntohl(pkt->ackno);
 
 	if (length == 8) {
-		if (r->sbuf->next_acked == ackno) {
+		//print_pkt(pkt, "r", ntohs(pkt->len));
+		//printf("CKSUM: %04x\n", cksum(&pkt->len, 6));
+		if (cksum(&pkt->len, 6) != pkt->cksum)
+			return;
+		if (r->sbuf->next_acked < ackno) {
 			node *rmv = remove_send(r);
 			free(rmv->packet);
 			free(rmv);
@@ -384,6 +402,8 @@ rel_recvpkt (rel_t *r, packet_t *pkt, size_t n)
 		}
 	}
 	else if (length == 12) {
+		if (cksum(&pkt->len, 10) != pkt->cksum)
+			return;
 		r->eof_read = 1;
 		if (r->eof_read == 1 && r->input_val == -1 &&
 				r->rbuf->head == NULL && r->sbuf->head == NULL) {
@@ -391,13 +411,17 @@ rel_recvpkt (rel_t *r, packet_t *pkt, size_t n)
 		}
 	}
 	else {
+		//print_pkt(pkt, "r", ntohs(pkt->len));
+		//printf("CKSUM: %04x\n", cksum(&pkt->len, ntohs(pkt->len) - 2));
+		if (cksum(&pkt->len, ntohs(pkt->len) - 2) != pkt->cksum)
+			return;
 		packet_t *new_pkt = (packet_t *) xmalloc(sizeof(*new_pkt));
-		memset(new_pkt, 0, sizeof(*new_pkt));
+		//memset(new_pkt, 0, sizeof(*new_pkt));
 		new_pkt->cksum = pkt->cksum;
 		new_pkt->len = pkt->len;
 		new_pkt->ackno = pkt->ackno;
 		new_pkt->seqno = pkt->seqno;
-		strncpy(new_pkt->data, pkt->data, 500);
+		strcpy(new_pkt->data, pkt->data);
 
 		if (seqno == r->rbuf->next_expected) {
 			addinorder_recv(r, new_pkt);
@@ -413,15 +437,17 @@ rel_recvpkt (rel_t *r, packet_t *pkt, size_t n)
 		}
 		else if (seqno < r->rbuf->next_expected) {
 			struct ack_packet *ack = (struct ack_packet *) xmalloc(sizeof(*ack));
-			ack->cksum = 0;
 			ack->len = htons(8);
-			ack->ackno = new_pkt->seqno;
+			ack->ackno = htonl(r->rbuf->next_expected);
+			ack->cksum = cksum(&ack->len, 6);
 			conn_sendpkt(r->c, (packet_t *) ack, 8);
 			free(new_pkt);
 			free(ack);
 		}
 		else {
-			addinorder_recv(r, new_pkt);
+			if (size_recv(r) < r->rbuf->max_size - 1) {
+				addinorder_recv(r, new_pkt);
+			}
 		}
 	}
 
@@ -435,11 +461,13 @@ rel_read (rel_t *s)
 {
 
 	char buf[500];
-	char *op = "s";
-
-	memset(buf, 0, 500);
-
 	while (1) {
+
+		memset(buf, 0, 500);
+
+		if (s->sbuf->next_seqno - s->sbuf->next_acked >= s->sbuf->max_size)
+			return;
+
 		s->input_val = conn_input(s->c, (void *) buf, 500);
 		if (s->input_val == 0)
 			return;
@@ -447,13 +475,15 @@ rel_read (rel_t *s)
 		packet_t *pkt = (packet_t *) xmalloc(sizeof(*pkt));
 		memset(pkt, 0, sizeof(*pkt));
 
-		pkt->cksum = 0; //TODO: cksum
 		pkt->len = htons(s->input_val + 12);
 		pkt->ackno = htonl(s->sbuf->next_acked);
 		pkt->seqno = htonl(s->sbuf->next_seqno);
-		strncpy((void *) pkt->data, (void *) buf, 500);
+		strcpy((void *) pkt->data, (void *) buf);
 		s->sbuf->next_seqno = s->sbuf->next_seqno + 1;
+		pkt->cksum = cksum(&pkt->len, ntohs(pkt->len) - 2);
 
+		//print_pkt(pkt, "s", ntohs(pkt->len));
+		//printf("%s\n", pkt->data);
 		addend_send(s, pkt);
 		conn_sendpkt(s->c, pkt, s->input_val + 12);
 	}
@@ -465,8 +495,6 @@ void
 rel_output (rel_t *r)
 {
 	char buf[500];
-	char *op = "recv";
-
 	node *cur = r->rbuf->head;
 
 	while (cur != NULL && ntohl(cur->packet->seqno) == r->rbuf->next_read) {
@@ -477,22 +505,23 @@ rel_output (rel_t *r)
 		}
 
 		packet_t *pkt = cur->packet;
-		strncpy((void *) buf, (void *) pkt->data, 500);
+		strcpy((void *) buf, (void *) pkt->data);
 		//print_recv(r);
-		conn_output(r->c, (void *) buf, 500);
+		conn_output(r->c, (void *) buf, ntohs(pkt->len) - 12);
 		r->rbuf->next_read = r->rbuf->next_read + 1;
 
 		struct ack_packet *ack = (struct ack_packet *) xmalloc(sizeof(*ack));
-		ack->cksum = 0;
 		ack->len = htons(8);
-		ack->ackno = pkt->seqno;
+		ack->ackno = htonl(r->rbuf->next_expected);
+		ack->cksum = cksum(&ack->len, 6);
 		conn_sendpkt(r->c, (packet_t *) ack, 8);
 		free(ack);
 
-		cur = r->rbuf->head;
 		node *n = remove_recv(r);
 		free(n->packet);
 		free(n);
+
+		cur = r->rbuf->head;
 	}
 }
 
@@ -504,6 +533,7 @@ rel_timer ()
 	while (rel != NULL) {
 		node *n = rel->sbuf->head;
 		while (n != NULL) {
+			time(&n->time_sent);
 			conn_sendpkt(rel->c, n->packet, ntohs(n->packet->len));
 			n = n->next;
 		}
